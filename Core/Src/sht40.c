@@ -89,3 +89,29 @@ int sht40_read_heater(float *temp_c, float *rh_pct)
 {
 	return sht40_measure(SHT40_CMD_HEATER_LOW, SHT40_DELAY_HEATER, temp_c, rh_pct);
 }
+
+int sht40_read_normal_sample(sensor_sample_t *out)
+{
+	if (out == NULL)
+	{
+		return -1;
+	}
+
+	out->tick_ms = HAL_GetTick();
+	out->source = 0U;
+	out->status = sht40_measure(SHT40_CMD_MEAS_HIGH, SHT40_DELAY_MEAS, &out->temp_c, &out->rh_pct);
+	return out->status;
+}
+
+int sht40_read_heater_sample(sensor_sample_t *out)
+{
+	if (out == NULL)
+	{
+		return -1;
+	}
+
+	out->tick_ms = HAL_GetTick();
+	out->source = 1U;
+	out->status = sht40_measure(SHT40_CMD_HEATER_LOW, SHT40_DELAY_HEATER, &out->temp_c, &out->rh_pct);
+	return out->status;
+}

@@ -168,11 +168,9 @@ int main(void)
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-  uint32_t count = 0;
   uint32_t last_blink_ms = 0;
   char line[80];
-  float temp_c = 0.0f;
-  float rh_pct = 0.0f;
+  sensor_sample_t sample = {0};
   while (1)
   {
     /* USER CODE END WHILE */
@@ -184,32 +182,40 @@ int main(void)
 		  last_blink_ms = now;
 		  register_led_toggle();
 
-		  int rc = sht40_read_normal(&temp_c, &rh_pct);
-		  if (rc == 0)
-		  {
-			  snprintf(line, sizeof(line), "T=%.2f C rh=%.2f %%\r\n", temp_c, rh_pct);
-			  uart_write(line);
-		  }
-		  else if (rc == -2)
-		  {
-			  uart_write("SHT40 Checksum error\r\n");
-		  }
-		  else
-		  {
-			  uart_write("SHT40 read error\r\n");
-		  }
+		  int rc = sht40_read_normal_sample(&sample);
 
-		  count++;
+		  if (rc == 0)
+		  	  {
+				  snprintf(line, sizeof(line),
+						   "t=%lu ms  T=%.2f C  rh=%.2f %%\r\n",
+						   (unsigned long)sample.tick_ms,
+						   sample.temp_c,
+						   sample.rh_pct);
+				  uart_write(line);
+			  }
+			  else if (rc == -2)
+			  {
+				  uart_write("SHT40 Checksum error\r\n");
+			  }
+			  else
+			  {
+				  uart_write("SHT40 read error\r\n");
+			  }
 	  }
 
 	  if (button_irq_pending != 0U)
 	  {
 		  button_irq_pending = 0U;
 
-		  int rch = sht40_read_heater(&temp_c, &rh_pct);
+		  int rch = sht40_read_heater_sample(&sample);
+
 		  if (rch == 0)
 		  {
-			  snprintf(line, sizeof(line), "[heater] T=%.2f C rh=%.2f %%\r\n", temp_c, rh_pct);
+			  snprintf(line, sizeof(line),
+					   "[heater] t=%lu ms  T=%.2f C  rh=%.2f %%\r\n",
+					   (unsigned long)sample.tick_ms,
+					   sample.temp_c,
+					   sample.rh_pct);
 			  uart_write(line);
 		  }
 		  else if (rch == -2)
@@ -218,7 +224,7 @@ int main(void)
 		  }
 		  else
 		  {
-			  uart_write("SHT40 Read error\r\n");
+			  uart_write("SHT40 read error\r\n");
 		  }
 	  }
 
