@@ -36,12 +36,24 @@ typedef enum
 	NODE_SENSOR_ERROR,
 	NODE_LOG_ERROR
 } node_status_t;
+
+typedef enum
+{
+	PAGE_LIVE_CLIMATE = 0,
+	PAGE_LIVE_AIR,
+	PAGE_LIVE_SOIL,
+	PAGE_STATUS,
+	PAGE_MAINTENANCE
+} ui_page_t;
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 #define LED_PIN 5U
 #define BUTTON_PIN 13U
+#define BUTTON_DEBOUNCE_MS 50U
+#define BUTTON_LONG_MS 800U
+#define UI_PAGE_COUNT 5U
 
 /* USER CODE END PD */
 
@@ -59,6 +71,14 @@ UART_HandleTypeDef huart2;
 volatile uint32_t button_irq_count = 0; //how many interrupt events happened
 volatile uint32_t button_irq_pending = 0; //flag
 static node_status_t node_status = NODE_BOOT;
+static ui_page_t ui_page = PAGE_LIVE_CLIMATE;
+static sensor_sample_t latest_ok = {0};
+static sht40_status_t last_sht40_status = SHT40_OK; /* last read result (ok or error) */
+
+static volatile uint8_t btn_press_armed = 0;
+static volatile uint8_t btn_long_fired = 0;
+static volatile uint32_t btn_press_start_ms = 0;
+static volatile uint32_t btn_last_edge_ms = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -190,9 +210,135 @@ static void i2c_scan(void)
 	}
 }
 
+static bool button_is_pressed(void)
+{
+	return (GPIOC->IDR & (1U << BUTTON_PIN)) == 0U;
+}
 
+static void ui_show_page(void)
+{
+	char title[20];
+	char data[20];
 
+	switch(ui_page)
+	{
+	case PAGE_LIVE_CLIMATE:
+		snprintf(title, sizeof(title), "LIVE CLIMATE");
+		snprintf(data, sizeof(data), "%4.1fC   %4.1f%%RH",
+				latest_ok.temp_c, latest_ok.rh_pct);
+		break;
 
+	case PAGE_LIVE_AIR:
+		snprintf(title, sizeof(title), "LIVE AIR");
+		snprintf(data, sizeof(data), "Lx --  CO2 --");
+		break;
+
+	case PAGE_LIVE_SOIL:
+		snprintf(title, sizeof(title), "LIVE SOIL");
+		snprintf(data, sizeof(data), "Soil --");
+		break;
+
+	case PAGE_STATUS:
+		snprintf(title, sizeof(title), "STATUS");
+		if (node_status == NODE_OK)
+			snprintf(data, sizeof(data), "OK");
+		else if (node_status == NODE_SENSOR_ERROR)
+			snprintf(data, sizeof(data), "ERR %-3s",
+					sht40_status_str(last_sht40_status));
+		else if (node_status == NODE_LOG_ERROR)
+			snprintf(data, sizeof(data), "ERR LOG");
+		else
+			snprintf(data, sizeof(data), "BOOT");
+		break;
+
+	case PAGE_MAINTENANCE:
+	default:
+		snprintf(title, sizeof(title), "MAINT");
+		snprintf(data, sizeof(data), "Hold=heater");
+		break;
+	}
+
+	uart_write(title);
+	uart_write("\r\n");
+	uart_write(data);
+	uart_write("\r\n");
+}
+
+static void ui_short_press(void)
+{
+	ui_page = (ui_page_t)(((unsigned)ui_page + 1U) % UI_PAGE_COUNT);
+	ui_show_page();
+}
+
+/* Jump to STATUS on a new sensor fault (or if user left STATUS while still failing). */
+static void ui_report_sensor_error(sht40_status_t err)
+{
+	const uint8_t already_err = (node_status == NODE_SENSOR_ERROR) ? 1U : 0U;
+
+	last_sht40_status = err;
+	node_status = NODE_SENSOR_ERROR;
+
+	if (already_err == 0U || ui_page != PAGE_STATUS)
+	{
+		ui_page = PAGE_STATUS;
+		ui_show_page();
+	}
+}
+
+static void ui_heater_once(sensor_sample_t *sample)
+{
+	char line[48];
+	sht40_status_t rch = sht40_read_heater_sample(sample);
+
+	if (rch == SHT40_OK)
+	{
+		node_status = NODE_OK;
+		last_sht40_status = SHT40_OK;
+		latest_ok = *sample;
+		snprintf(line, sizeof(line),
+				 "[heater] %4.1fC %4.1f%%RH\r\n",
+				 sample->temp_c,
+				 sample->rh_pct);
+		uart_write(line);
+	}
+	else
+	{
+		ui_report_sensor_error(rch);
+		snprintf(line, sizeof(line),
+				 "SHT40 error: %s\r\n", sht40_status_str(rch));
+		uart_write(line);
+	}
+}
+
+/* Must come after ui_short_press / ui_heater_once (or declare prototypes above). */
+static void button_ui_process(uint32_t now, sensor_sample_t *sample)
+{
+	if (btn_press_armed == 0U)
+		return;
+
+	uint32_t held = now - btn_press_start_ms;
+
+	if (button_is_pressed())
+	{
+		if (btn_long_fired == 0U && held >= BUTTON_LONG_MS)
+		{
+			btn_long_fired = 1U;
+			if (ui_page == PAGE_MAINTENANCE)
+				ui_heater_once(sample);
+		}
+		return;
+	}
+
+	btn_press_armed = 0U;
+
+	if (btn_long_fired != 0U)
+		return;
+
+	if (held < BUTTON_DEBOUNCE_MS)
+		return;
+
+	ui_short_press();
+}
 /* USER CODE END 0 */
 
 /**
@@ -230,13 +376,14 @@ int main(void)
   register_led_init();
   register_led_on();
   uart_write("\r\nSTM32 plant node boot\r\n");
+  ui_show_page();
   i2c_scan();
   node_status = NODE_OK;
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-  uint32_t last_blink_ms = 0;
+  uint32_t last_sensor_ms = 0;
   char line[80];
   sensor_sample_t sample = {0};
   while (1)
@@ -246,55 +393,34 @@ int main(void)
     /* USER CODE BEGIN 3 */
 	  uint32_t now = HAL_GetTick();
 	  led_status_update(now);
-	  if ((now - last_blink_ms) >= 1000)
+	  button_ui_process(now, &sample);
+
+	  if ((now - last_sensor_ms) >= 1000)
 	  {
-		  last_blink_ms = now;
+		  last_sensor_ms = now;
 
 		  sht40_status_t rc = sht40_read_normal_sample(&sample);
 
 		  if (rc == SHT40_OK)
-		  	  {
-			  	  node_status = NODE_OK;
-				  snprintf(line, sizeof(line),
-						   "t=%lu ms  T=%.2f C  rh=%.2f %%\r\n",
-						   (unsigned long)sample.tick_ms,
-						   sample.temp_c,
-						   sample.rh_pct);
-				  uart_write(line);
-			  }
+		  {
+			  node_status = NODE_OK;
+			  last_sht40_status = SHT40_OK;
+			  latest_ok = sample;
+			  ui_show_page();
+			  /*snprintf(line, sizeof(line),
+					   "t=%lu ms  T=%.2f C  rh=%.2f %%\r\n",
+					   (unsigned long)sample.tick_ms,
+					   sample.temp_c,
+					   sample.rh_pct);
+			  uart_write(line);*/
+		  }
 		  else
 		  {
-			  node_status = NODE_SENSOR_ERROR;
+			  ui_report_sensor_error(rc);
 			  snprintf(line, sizeof(line), "SHT40 error: %s\r\n", sht40_status_str(rc));
 			  uart_write(line);
 		  }
 	  }
-
-	  if (button_irq_pending != 0U)
-	  {
-		  button_irq_pending = 0U;
-
-		  sht40_status_t rch = sht40_read_heater_sample(&sample);
-
-		  if (rch == SHT40_OK)
-		  {
-			  node_status = NODE_OK;
-			  snprintf(line, sizeof(line),
-					   "[heater] t=%lu ms  T=%.2f C  rh=%.2f %%\r\n",
-					   (unsigned long)sample.tick_ms,
-					   sample.temp_c,
-					   sample.rh_pct);
-			  uart_write(line);
-		  }
-		  else
-		  {
-			  node_status = NODE_SENSOR_ERROR;
-			  snprintf(line, sizeof(line), "SHT40 error: %s\r\n", sht40_status_str(rch));
-			  uart_write(line);
-		  }
-	  }
-
-
   }
   /* USER CODE END 3 */
 }
@@ -455,11 +581,16 @@ static void MX_GPIO_Init(void)
 /* USER CODE BEGIN 4 */
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_pin)
 {
-	if(GPIO_pin == GPIO_PIN_13)
-	{
-		button_irq_count++;
-		button_irq_pending = 1U;
-	}
+	if(GPIO_pin != GPIO_PIN_13)
+		return;
+	uint32_t now = HAL_GetTick();
+	if ((now - btn_last_edge_ms) < BUTTON_DEBOUNCE_MS)
+		return;
+
+	btn_last_edge_ms = now;
+	btn_press_start_ms = now;
+	btn_press_armed = 1U;
+	btn_long_fired = 0U;
 }
 /* USER CODE END 4 */
 

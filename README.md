@@ -1,8 +1,7 @@
 # STM32 Plant Environment Sensor Node
 
-The project is my attempt at learning freeRTOS through building a working data-gathering device.
-More info will be added as functionality expands.
-Bare-metal firmware on **Nucleo-F411RE** (STM32F411RE).
+Learning FreeRTOS by building a small plant/environment node on **Nucleo-F411RE**.
+Right now it’s still bare-metal HAL: SHT40 over I2C, on-board button + LED, UART as a stand-in for a future 1602 LCD.
 
 ## Pinout
 
@@ -25,6 +24,28 @@ Bare-metal firmware on **Nucleo-F411RE** (STM32F411RE).
 115200 8N1  (ST-LINK Virtual COM Port)
 ```
 
-- Normal: `T=xx.xx C rh=yy.yy %`
-- B1: `[heater] T=...` (not ambient-accurate during heat)
-- Driver: `0` OK, `-1` I2C fail, `-2` CRC fail
+UART prints a 2-line “page” of an emulated 1602A lcd (title + data).
+
+## Controls (B1)
+
+| Gesture | What it does |
+|---------|----------------|
+| Short press | Next page |
+| Long press (~800 ms) on **MAINT** | One SHT40 heater pulse |
+
+Page order:
+
+```text
+LIVE CLIMATE → LIVE AIR → LIVE SOIL → STATUS → MAINT → …
+```
+
+- **LIVE CLIMATE** — T + RH (updates ~1 Hz while OK)
+- **LIVE AIR / SOIL** — placeholders until more sensors
+- **STATUS** — `OK` or `ERR …` (auto-jumps here on a new sensor fault)
+- **MAINT** — hold for heater
+
+## LED
+
+- Slow blink — OK  
+- Fast blink — sensor error  
+- (log-error pattern reserved for later)
