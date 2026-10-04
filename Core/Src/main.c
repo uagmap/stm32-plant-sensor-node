@@ -29,7 +29,13 @@
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
-
+typedef enum
+{
+	NODE_BOOT = 0,
+	NODE_OK,
+	NODE_SENSOR_ERROR,
+	NODE_LOG_ERROR
+} node_status_t;
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
@@ -52,6 +58,7 @@ UART_HandleTypeDef huart2;
 /* USER CODE BEGIN PV */
 volatile uint32_t button_irq_count = 0; //how many interrupt events happened
 volatile uint32_t button_irq_pending = 0; //flag
+static node_status_t node_status = NODE_BOOT;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -91,6 +98,65 @@ static void register_led_init(void)
 static void register_led_toggle(void)
 {
 	GPIOA->ODR ^= (1U << LED_PIN);
+}
+
+static void register_led_on(void)
+{
+	GPIOA->BSRR = (1U << (LED_PIN));
+}
+
+static void register_led_off(void)
+{
+	GPIOA->BSRR = (1U << (LED_PIN + 16U));
+}
+
+static void led_status_update(uint32_t now)
+{
+	switch(node_status)
+	{
+	case NODE_BOOT:
+		register_led_on();
+		break;
+
+	case NODE_OK:
+	{
+		//1Hz blinking
+		if ((now % 1000U) < 500U)
+			register_led_on();
+		else
+			register_led_off();
+		break;
+	}
+
+	case NODE_SENSOR_ERROR:
+	{
+		//5Hz blink
+		if ((now % 200U) < 100U)
+			register_led_on();
+		else
+			register_led_off();
+		break;
+	}
+
+	case NODE_LOG_ERROR:
+	{
+		//double blink
+		uint32_t phase = now % 1000U;
+		if (phase < 100U)
+			register_led_on();
+		else if (phase < 200U)
+			register_led_off();
+		else if (phase < 300U)
+			register_led_on();
+		else
+			register_led_off();
+		break;
+	}
+
+	default:
+		register_led_off();
+		break;
+	}
 }
 
 static void uart_write(const char *message)
@@ -162,8 +228,10 @@ int main(void)
   MX_I2C1_Init();
   /* USER CODE BEGIN 2 */
   register_led_init();
+  register_led_on();
   uart_write("\r\nSTM32 plant node boot\r\n");
   i2c_scan();
+  node_status = NODE_OK;
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -177,15 +245,16 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
 	  uint32_t now = HAL_GetTick();
+	  led_status_update(now);
 	  if ((now - last_blink_ms) >= 1000)
 	  {
 		  last_blink_ms = now;
-		  register_led_toggle();
 
 		  int rc = sht40_read_normal_sample(&sample);
 
 		  if (rc == 0)
 		  	  {
+			  	  node_status = NODE_OK;
 				  snprintf(line, sizeof(line),
 						   "t=%lu ms  T=%.2f C  rh=%.2f %%\r\n",
 						   (unsigned long)sample.tick_ms,
@@ -193,7 +262,10 @@ int main(void)
 						   sample.rh_pct);
 				  uart_write(line);
 			  }
-			  else if (rc == -2)
+		  else
+		  {
+			  node_status = NODE_SENSOR_ERROR;
+			  if (rc == -2)
 			  {
 				  uart_write("SHT40 Checksum error\r\n");
 			  }
@@ -201,6 +273,7 @@ int main(void)
 			  {
 				  uart_write("SHT40 read error\r\n");
 			  }
+		  }
 	  }
 
 	  if (button_irq_pending != 0U)
