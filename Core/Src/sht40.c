@@ -39,13 +39,25 @@ static uint8_t sht40_crc8(const uint8_t *data, uint8_t len)
 	return crc;
 }
 
-static int sht40_measure(uint8_t cmd, uint32_t wait_ms, float *temp_c, float *rh_pct)
+const char *sht40_status_str(sht40_status_t status)
+{
+	switch(status)
+	{
+	case SHT40_OK:			return "OK";
+	case SHT40_ERR_I2C:		return "I2C";
+	case SHT40_ERR_CRC:		return "CRC";
+	case SHT40_ERR_PARAM:	return "PARAM";
+	default:				return "UNKNOWN";
+	}
+}
+
+static sht40_status_t sht40_measure(uint8_t cmd, uint32_t wait_ms, float *temp_c, float *rh_pct)
 {
 	uint8_t data[6]; //data package: [t][t][t_crc][rh][rh][rh_crc]
 
 	if (HAL_I2C_Master_Transmit(&hi2c1, (uint16_t)(SHT40_ADDR << 1), &cmd, 1, 100) != HAL_OK)
 	{
-		return -1;
+		return SHT40_ERR_I2C;
 	}
 
 	uint32_t start = HAL_GetTick();
@@ -55,16 +67,16 @@ static int sht40_measure(uint8_t cmd, uint32_t wait_ms, float *temp_c, float *rh
 
 	if (HAL_I2C_Master_Receive(&hi2c1, (uint16_t)(SHT40_ADDR << 1), data, 6, 100) != HAL_OK)
 	{
-		return -1;
+		return SHT40_ERR_I2C;
 	}
 
 	if (sht40_crc8(&data[0], 2) != data[2])
 	{
-		return -2;   /* temperature CRC bad */
+		return SHT40_ERR_CRC;   /* temperature CRC bad */
 	}
 	if (sht40_crc8(&data[3], 2) != data[5])
 	{
-		return -2;   /* humidity CRC bad */
+		return SHT40_ERR_CRC;   /* humidity CRC bad */
 	}
 
 	uint16_t t_ticks = ((uint16_t)data[0] << 8) | data[1]; //assemble bytes of data into one number
@@ -77,20 +89,20 @@ static int sht40_measure(uint8_t cmd, uint32_t wait_ms, float *temp_c, float *rh
 	if (*rh_pct > 100.0f) *rh_pct = 100.0f;
 	if (*rh_pct < 0.0f) *rh_pct = 0.0f;
 
-	return 0;
+	return SHT40_OK;
 }
 
-int sht40_read_normal(float *temp_c, float *rh_pct)
+sht40_status_t sht40_read_normal(float *temp_c, float *rh_pct)
 {
 	return sht40_measure(SHT40_CMD_MEAS_HIGH, SHT40_DELAY_MEAS, temp_c, rh_pct);
 }
 
-int sht40_read_heater(float *temp_c, float *rh_pct)
+sht40_status_t sht40_read_heater(float *temp_c, float *rh_pct)
 {
 	return sht40_measure(SHT40_CMD_HEATER_LOW, SHT40_DELAY_HEATER, temp_c, rh_pct);
 }
 
-int sht40_read_normal_sample(sensor_sample_t *out)
+sht40_status_t sht40_read_normal_sample(sensor_sample_t *out)
 {
 	if (out == NULL)
 	{
@@ -103,7 +115,7 @@ int sht40_read_normal_sample(sensor_sample_t *out)
 	return out->status;
 }
 
-int sht40_read_heater_sample(sensor_sample_t *out)
+sht40_status_t sht40_read_heater_sample(sensor_sample_t *out)
 {
 	if (out == NULL)
 	{

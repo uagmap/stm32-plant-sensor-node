@@ -250,9 +250,9 @@ int main(void)
 	  {
 		  last_blink_ms = now;
 
-		  int rc = sht40_read_normal_sample(&sample);
+		  sht40_status_t rc = sht40_read_normal_sample(&sample);
 
-		  if (rc == 0)
+		  if (rc == SHT40_OK)
 		  	  {
 			  	  node_status = NODE_OK;
 				  snprintf(line, sizeof(line),
@@ -265,14 +265,8 @@ int main(void)
 		  else
 		  {
 			  node_status = NODE_SENSOR_ERROR;
-			  if (rc == -2)
-			  {
-				  uart_write("SHT40 Checksum error\r\n");
-			  }
-			  else
-			  {
-				  uart_write("SHT40 read error\r\n");
-			  }
+			  snprintf(line, sizeof(line), "SHT40 error: %s\r\n", sht40_status_str(rc));
+			  uart_write(line);
 		  }
 	  }
 
@@ -280,10 +274,11 @@ int main(void)
 	  {
 		  button_irq_pending = 0U;
 
-		  int rch = sht40_read_heater_sample(&sample);
+		  sht40_status_t rch = sht40_read_heater_sample(&sample);
 
-		  if (rch == 0)
+		  if (rch == SHT40_OK)
 		  {
+			  node_status = NODE_OK;
 			  snprintf(line, sizeof(line),
 					   "[heater] t=%lu ms  T=%.2f C  rh=%.2f %%\r\n",
 					   (unsigned long)sample.tick_ms,
@@ -291,13 +286,11 @@ int main(void)
 					   sample.rh_pct);
 			  uart_write(line);
 		  }
-		  else if (rch == -2)
-		  {
-			  uart_write("SHT40 Checksum error\r\n");
-		  }
 		  else
 		  {
-			  uart_write("SHT40 read error\r\n");
+			  node_status = NODE_SENSOR_ERROR;
+			  snprintf(line, sizeof(line), "SHT40 error: %s\r\n", sht40_status_str(rch));
+			  uart_write(line);
 		  }
 	  }
 

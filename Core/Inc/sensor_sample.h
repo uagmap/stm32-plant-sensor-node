@@ -10,13 +10,23 @@
 
 #include <stdint.h>
 
+typedef enum
+{
+	SHT40_OK = 0,
+	SHT40_ERR_I2C = -1,
+	SHT40_ERR_CRC = -2,
+	SHT40_ERR_PARAM = -3
+} sht40_status_t;
+
 typedef struct
 {
 	uint32_t tick_ms;
 	float temp_c;
 	float rh_pct;
-	int status; // 0 - OK, -1 - I2C, -2 - CRC
+	sht40_status_t status;
 	uint8_t source; //0 - normal, 1 - heater
 } sensor_sample_t;
+
+const char *sht40_status_str(sht40_status_t status);
 
 #endif /* INC_SENSOR_SAMPLE_H_ */
