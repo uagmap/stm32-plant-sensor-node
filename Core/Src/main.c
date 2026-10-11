@@ -25,6 +25,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "sht40.h"
+#include "bh1750.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -33,7 +34,9 @@ typedef enum
 {
 	NODE_BOOT = 0,
 	NODE_OK,
-	NODE_SENSOR_ERROR,
+	NODE_SHT40_ERROR,
+	NODE_BH1750_ERROR,
+	NODE_SENSOR_ERROR, //more than one sensor
 	NODE_LOG_ERROR
 } node_status_t;
 
@@ -68,12 +71,12 @@ I2C_HandleTypeDef hi2c1;
 UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
-volatile uint32_t button_irq_count = 0; //how many interrupt events happened
-volatile uint32_t button_irq_pending = 0; //flag
 static node_status_t node_status = NODE_BOOT;
 static ui_page_t ui_page = PAGE_LIVE_CLIMATE;
-static sensor_sample_t latest_ok = {0};
+static sht40_sample_t sht40_latest_ok = {0};
 static sht40_status_t last_sht40_status = SHT40_OK; /* last read result (ok or error) */
+static bh1750_sample_t bh1750_latest_ok = {0};
+static bh1750_status_t last_bh1750_status = BH1750_OK;
 
 static volatile uint8_t btn_press_armed = 0;
 static volatile uint8_t btn_long_fired = 0;
@@ -115,10 +118,10 @@ static void register_led_init(void)
 	GPIOA->BSRR = (1U << (LED_PIN + 16U));
 }
 
-static void register_led_toggle(void)
+/*static void register_led_toggle(void)
 {
 	GPIOA->ODR ^= (1U << LED_PIN);
-}
+}*/
 
 static void register_led_on(void)
 {
@@ -148,10 +151,23 @@ static void led_status_update(uint32_t now)
 		break;
 	}
 
-	case NODE_SENSOR_ERROR:
+	case NODE_SHT40_ERROR:
 	{
-		//5Hz blink
-		if ((now % 200U) < 100U)
+		//double blink
+		uint32_t phase = now % 3000U;
+		if (phase < 200U || (phase >= 400U && phase < 600U))
+			register_led_on();
+		else
+			register_led_off();
+		break;
+	}
+
+	case NODE_BH1750_ERROR:
+	{
+		//triple blink
+		uint32_t phase = now % 3000U;
+		if (phase < 200U 	|| (phase >= 400U && phase < 600U)
+							|| (phase >= 800U && phase < 1000U))
 			register_led_on();
 		else
 			register_led_off();
@@ -160,13 +176,19 @@ static void led_status_update(uint32_t now)
 
 	case NODE_LOG_ERROR:
 	{
-		//double blink
 		uint32_t phase = now % 1000U;
-		if (phase < 100U)
+		if (phase < 100U 	|| (phase >= 200U && phase < 300U)
+							|| phase >= 400U)
 			register_led_on();
-		else if (phase < 200U)
+		else
 			register_led_off();
-		else if (phase < 300U)
+		break;
+	}
+
+	case NODE_SENSOR_ERROR:
+	{
+		//5Hz blinking
+		if ((now % 200U) < 100U)
 			register_led_on();
 		else
 			register_led_off();
@@ -225,12 +247,12 @@ static void ui_show_page(void)
 	case PAGE_LIVE_CLIMATE:
 		snprintf(title, sizeof(title), "LIVE CLIMATE");
 		snprintf(data, sizeof(data), "%4.1fC   %4.1f%%RH",
-				latest_ok.temp_c, latest_ok.rh_pct);
+				sht40_latest_ok.temp_c, sht40_latest_ok.rh_pct);
 		break;
 
 	case PAGE_LIVE_AIR:
 		snprintf(title, sizeof(title), "LIVE AIR");
-		snprintf(data, sizeof(data), "Lx --  CO2 --");
+		snprintf(data, sizeof(data), "Lx %4.1f  CO2 --", bh1750_latest_ok.lux);
 		break;
 
 	case PAGE_LIVE_SOIL:
@@ -242,9 +264,14 @@ static void ui_show_page(void)
 		snprintf(title, sizeof(title), "STATUS");
 		if (node_status == NODE_OK)
 			snprintf(data, sizeof(data), "OK");
-		else if (node_status == NODE_SENSOR_ERROR)
-			snprintf(data, sizeof(data), "ERR %-3s",
+		else if (node_status == NODE_SHT40_ERROR)
+			snprintf(data, sizeof(data), "SHT40 ERR %-3s",
 					sht40_status_str(last_sht40_status));
+		else if (node_status == NODE_BH1750_ERROR)
+				snprintf(data, sizeof(data), "BH1750 ERR %-3s",
+						bh1750_status_str(last_bh1750_status));
+		else if (node_status == NODE_SENSOR_ERROR)
+			snprintf(data, sizeof(data), "ERR MULTI SENSOR");
 		else if (node_status == NODE_LOG_ERROR)
 			snprintf(data, sizeof(data), "ERR LOG");
 		else
@@ -270,22 +297,7 @@ static void ui_short_press(void)
 	ui_show_page();
 }
 
-/* Jump to STATUS on a new sensor fault (or if user left STATUS while still failing). */
-static void ui_report_sensor_error(sht40_status_t err)
-{
-	const uint8_t already_err = (node_status == NODE_SENSOR_ERROR) ? 1U : 0U;
-
-	last_sht40_status = err;
-	node_status = NODE_SENSOR_ERROR;
-
-	if (already_err == 0U || ui_page != PAGE_STATUS)
-	{
-		ui_page = PAGE_STATUS;
-		ui_show_page();
-	}
-}
-
-static void ui_heater_once(sensor_sample_t *sample)
+static void ui_heater_once(sht40_sample_t *sample)
 {
 	char line[48];
 	sht40_status_t rch = sht40_read_heater_sample(sample);
@@ -294,7 +306,7 @@ static void ui_heater_once(sensor_sample_t *sample)
 	{
 		node_status = NODE_OK;
 		last_sht40_status = SHT40_OK;
-		latest_ok = *sample;
+		sht40_latest_ok = *sample;
 		snprintf(line, sizeof(line),
 				 "[heater] %4.1fC %4.1f%%RH\r\n",
 				 sample->temp_c,
@@ -303,15 +315,18 @@ static void ui_heater_once(sensor_sample_t *sample)
 	}
 	else
 	{
-		ui_report_sensor_error(rch);
+		node_status = NODE_SHT40_ERROR;
+		last_sht40_status = rch;
+		ui_page = PAGE_STATUS;
+		ui_show_page();
 		snprintf(line, sizeof(line),
-				 "SHT40 error: %s\r\n", sht40_status_str(rch));
+		             "SHT40 error: %s\r\n", sht40_status_str(rch));
 		uart_write(line);
 	}
 }
 
 /* Must come after ui_short_press / ui_heater_once (or declare prototypes above). */
-static void button_ui_process(uint32_t now, sensor_sample_t *sample)
+static void button_ui_process(uint32_t now, sht40_sample_t *sample)
 {
 	if (btn_press_armed == 0U)
 		return;
@@ -384,8 +399,8 @@ int main(void)
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   uint32_t last_sensor_ms = 0;
-  char line[80];
-  sensor_sample_t sample = {0};
+  sht40_sample_t sample = {0};
+  bh1750_sample_t light = {0};
   while (1)
   {
     /* USER CODE END WHILE */
@@ -399,27 +414,32 @@ int main(void)
 	  {
 		  last_sensor_ms = now;
 
-		  sht40_status_t rc = sht40_read_normal_sample(&sample);
+		  sht40_status_t sht40_rc = sht40_read_normal_sample(&sample);
+		  bh1750_status_t bh1750_rc = bh1750_read_sample(&light);
 
-		  if (rc == SHT40_OK)
-		  {
-			  node_status = NODE_OK;
-			  last_sht40_status = SHT40_OK;
-			  latest_ok = sample;
-			  ui_show_page();
-			  /*snprintf(line, sizeof(line),
-					   "t=%lu ms  T=%.2f C  rh=%.2f %%\r\n",
-					   (unsigned long)sample.tick_ms,
-					   sample.temp_c,
-					   sample.rh_pct);
-			  uart_write(line);*/
-		  }
+		  last_sht40_status = sht40_rc;
+		  last_bh1750_status = bh1750_rc;
+
+		  node_status_t prev = node_status;
+
+		  if (sht40_rc == SHT40_OK) sht40_latest_ok = sample;
+		  if (bh1750_rc == BH1750_OK) bh1750_latest_ok = light;
+
+		  if ((sht40_rc != SHT40_OK) && (bh1750_rc != BH1750_OK))
+			  node_status = NODE_SENSOR_ERROR;
+		  else if (sht40_rc != SHT40_OK)
+			  node_status = NODE_SHT40_ERROR;
+		  else if (bh1750_rc != BH1750_OK)
+			  node_status = NODE_BH1750_ERROR;
 		  else
-		  {
-			  ui_report_sensor_error(rc);
-			  snprintf(line, sizeof(line), "SHT40 error: %s\r\n", sht40_status_str(rc));
-			  uart_write(line);
-		  }
+			  node_status = NODE_OK;
+
+		  if (node_status != NODE_OK && (prev != node_status || ui_page != PAGE_STATUS))
+			  ui_page = PAGE_STATUS;
+
+		  ui_show_page();
+
+
 	  }
   }
   /* USER CODE END 3 */

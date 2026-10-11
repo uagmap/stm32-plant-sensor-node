@@ -18,6 +18,15 @@ typedef enum
 	SHT40_ERR_PARAM = -3
 } sht40_status_t;
 
+typedef enum
+{
+	BH1750_OK = 0,
+	BH1750_ERR_I2C = -1,
+	BH1750_ERR_PARAM = -3
+} bh1750_status_t;
+
+
+
 typedef struct
 {
 	uint32_t tick_ms;
@@ -25,8 +34,16 @@ typedef struct
 	float rh_pct;
 	sht40_status_t status;
 	uint8_t source; //0 - normal, 1 - heater
-} sensor_sample_t;
+} sht40_sample_t;
+
+typedef struct
+{
+	uint32_t tick_ms;
+	float lux;
+	bh1750_status_t status;
+} bh1750_sample_t;
 
 const char *sht40_status_str(sht40_status_t status);
+const char *bh1750_status_str(bh1750_status_t status);
 
 #endif /* INC_SENSOR_SAMPLE_H_ */

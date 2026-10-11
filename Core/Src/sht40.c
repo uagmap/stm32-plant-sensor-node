@@ -102,7 +102,7 @@ sht40_status_t sht40_read_heater(float *temp_c, float *rh_pct)
 	return sht40_measure(SHT40_CMD_HEATER_LOW, SHT40_DELAY_HEATER, temp_c, rh_pct);
 }
 
-sht40_status_t sht40_read_normal_sample(sensor_sample_t *out)
+sht40_status_t sht40_read_normal_sample(sht40_sample_t *out)
 {
 	if (out == NULL)
 	{
@@ -115,7 +115,7 @@ sht40_status_t sht40_read_normal_sample(sensor_sample_t *out)
 	return out->status;
 }
 
-sht40_status_t sht40_read_heater_sample(sensor_sample_t *out)
+sht40_status_t sht40_read_heater_sample(sht40_sample_t *out)
 {
 	if (out == NULL)
 	{

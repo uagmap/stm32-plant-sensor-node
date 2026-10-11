@@ -53,4 +53,5 @@ release
 
 # Local artifacts
 .cursor/
+.vibe-wise/
 notes/
